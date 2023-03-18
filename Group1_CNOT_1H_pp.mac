@@ -1,0 +1,178 @@
+############################################################
+#
+# A pulse sequence suitable for performing a
+# pulse and collect experiment.
+#
+#   1H    90y - devolution - 90x -devolution -     - pulse - acq
+#   13C -     - devolution - 90y -devolution - 90x - no dec
+#
+############################################################
+
+procedure(pulse_program,dir,mode)
+
+# Interface description (name, label, x, y, ctrl, vartype)
+  interface = ["nucleus",         "Nucleus",                    "tb",  "readonly_string";
+               "b1Freq1H",        "1H frequency (MHz)",         "tb",  "freq";
+               "centerFreqPPM",   "Centre frequency (ppm)",     "tb",  "float";
+               "90Amplitude1H",   "Pulse amplitude (dB)",       "tb",  "pulseamp";
+               "90Amplitude13C",  "Pulse amplitude 13C(dB)",    "tb",  "pulseamp";
+               "90AmplitudeHC",   "90 HC Pulse amp (dB)",       "tb",  "pulseamp";
+               "pulseLength1H",   "Pulse length (us)",          "tb",  "pulselength";
+               "pulseLength13C",  "Pulse length 13C(us)",       "tb",  "pulselength";
+               "b1Freq13C",       "13C frequency (MHz)",        "tb",  "freq";
+               "decoupleAmp",     "Decouple amplitude (dB)",    "tb",  "pulseamp";
+               "pulseLengthC180", "Dec length 180 (us)",        "tb",  "pulselength";
+               "dEvolution",      "Evolution Delay (ms)",       "tb", "reptime";
+               "shiftPoints",     "Number of points to shift",  "tb",  "float,[-100,100]";
+               "repTime",         "Repetition time (ms)",       "tb",  "reptime"]
+
+
+# Relationships to determine remaining variable values
+   relationships = ["freq1H        = b1Freq1H",
+                    "freq13C       = b1Freq13C",
+                    "nPnts         = nrPnts",
+                    "waltzDuration = WALTZ16:duration(pulseLengthC180/2,pgo)",
+                    "nLoops        = trunc(1000*acqTime/waltzDuration)+1",
+                    "a90H          = 90Amplitude1H",
+                    "a90C          = 90Amplitude13C",
+                    "a90HC         = 90AmplitudeHC",
+                    "aDec          = decoupleAmp",
+                    "d90H          = pulseLength1H",
+                    "d90C          = pulseLength13C",
+                    "d180C         = pulseLengthC180",
+                    "d90C          = pulseLengthC180/2",
+                    "d270C         = 3*pulseLengthC180/2",
+                    "d360C         = 2*pulseLengthC180",  
+                    "dAcq          = ucsUtilities:getacqDelay(pulseLength1H,shiftPoints,dwellTime)",
+                    "offFreq1H     = (centerFreqPPM-wvPPMOffset1H)*b1Freq1H",
+                    "O1            = offFreq1H",
+                    "fTx1H         = double(b1Freq1H)+double(offFreq1H/1e6d)",
+                    "fTx13C        = double(b1Freq13C)",
+                    "totPnts       = nrPnts",
+                    "totTime       = acqTime"]
+
+   # Define the pulse programs parameter groups and their order
+   groups = ["Pulse_sequence","Progress","Acquisition",
+             "Processing_Std","Display_Std","File_Settings"]
+
+   # These parameters will be changed between experiments
+   variables = [""]
+
+   # Pulse sequence
+   initpp(dir) # Reset internal parameter list
+
+   cleardata(nPnts)
+
+   # Set the 1H and 13C transmit frequencies
+   settxfreqs(fTx1H,fTx13C) # settxfreqs(value for channel 1, value for channel 2)
+
+   # Allow time to finish lock scan
+   delay(5000)             
+
+   pVal = "P1"
+
+   # ======= P0 =======
+   if pVal == "P0"
+      print("Running with P0")
+
+
+      # 90 H RF pulse
+      pulse(1,a90HC,p1,d90C)
+   # ======= P1 =======
+   elseif pVal == "P1"
+      print("Running with P1")
+
+      # 90y-H pulse
+      pulse(1,a90HC,p4,d90C) 
+   
+      # Evolution delay 
+      delay(dEvolution) 
+     
+      # 90-Hx and 90y-C pulse
+      pulse(1,a90HC,p5,freq1H,2,a90C,p4,freq13C,d90C) 
+   
+      # Evolution delay
+      delay(dEvolution) 
+   
+      # 90x-C pulse
+      pulse(2,a90C,p5,d90C)  
+     
+      delay(0.25)
+   
+      # 90 H RF pulse
+      pulse(1,a90HC,p1,d90C)
+   # ======= P2 =======
+   elseif pVal == "P2"
+      print("Running with P2")
+
+
+      # 90y-C pulse
+      pulse(2,a90C,p4,d90C) 
+
+      # Evolution delay 
+      delay(dEvolution) 
+  
+      # 90y-H and 90x-C pulse
+      pulse(1,a90HC,p4,freq1H,2,a90C,p5,freq13C,d90C) 
+
+      # Evolution delay
+      delay(dEvolution) 
+
+      # 90x-H pulse
+      pulse(1,a90HC,p5,d90C) 
+ 
+      delay(0.25)
+
+     # 90 H RF pulse
+      pulse(1,a90HC,p1,d90C)  
+   endif
+
+   print("Acquiring...")
+
+   # No P1 acquisition delay
+   delay(dAcq)
+
+   acquire("overwrite",nPnts)
+
+   lst = endpp(mode) # Return parameter list
+
+   # Phase cycle list
+   phaseList = [0,2,0,2; # 90 phase
+                0,0,2,2;
+                2,2,0,0;
+                1,3,1,3; #p4
+                0,2,0,2; #p5
+                0,2,0,2] # Acquire phase
+                  
+endproc(lst,groups,interface,relationships,variables,dim=0,phaseList)
+
+#####################################################
+# Assign those parameters which should take their 
+# values from the factory defaults when making a 
+# new experiment
+#####################################################
+
+procedure(getFactoryBasedParameters, par)
+
+   specPar = SpinsolveParameterUpdater:readDSPParameters("1H")
+   if(specPar == null)
+      return(null)
+   endif
+   assignlist(specPar)
+
+   modelPar = ucsUtilities:getModelBasedParameters("1H",specPar)
+
+   pulseLength1H   = PulseLength_1H 
+   90Amplitude1H   = PowerLevel_1H
+   pulseLengthC180 = Pulse_length_X*4  
+   decoupleAmp     = Power_level_X - 6
+
+   par = ["b1Freq13C       = $Frequency_X$",
+          "pulseLength1H   = $pulseLength1H$",
+          "90Amplitude1H   = $90Amplitude1H$",
+          "pulseLengthC180 = $pulseLengthC180$",
+          "decoupleAmp     = $decoupleAmp$",
+          "rxGain          = $modelPar->rxGain$",
+          "b1Freq1H        = $Frequency_1H$"]
+
+endproc(par)
